@@ -84,12 +84,6 @@ int convertPduToHex( uint8_t* message, uint8_t* hex )
   int i = 0;
   while( message[ i ] != 0 )
   {
-    // Serial.print( "Here:" );
-    // Serial.print( i );
-    // Serial.print( " char:" );
-    // Serial.print( message[ i ] );
-    // Serial.print( " val:" );
-    // Serial.println( ctoi( message[ i ] ) );
     if( i % 2 == 1 )
     {
       hex[ i / 2 ] = hex[ i / 2 ] << 4;
@@ -205,7 +199,7 @@ void handleSms( uint8_t* str )
   {
     switch( hex[ pos + 1 ] & 0x7F )
     {
-    case 'A':
+    case 'A': // Norwegian for OFF is "AV"
     case 'a':
       {
         // Turn off
@@ -213,7 +207,7 @@ void handleSms( uint8_t* str )
         digitalWrite( 13, LOW );
         break;
       }
-    case 'p':
+    case 'p': // Norwegian for ON is "PÅ"
     case 'P':
       {
         // Turn on
@@ -365,16 +359,12 @@ void setup()
 
 void loop() // run over and over
 {
-  receiveData( sendReceiveString, 5000 );
-  receiveData( sendReceiveString, 5000 );
-  receiveData( sendReceiveString, 5000 );
-  receiveData( sendReceiveString, 5000 );
-  receiveData( sendReceiveString, 5000 );
   if( millis() > nextLog )
   {
     nextLog += 3600000;
     storeTemp();
   }
-
   cellSerial.println( "AT" );
+  receiveData( sendReceiveString, 5000 );
+  receiveData( sendReceiveString, 25000 );
 }
