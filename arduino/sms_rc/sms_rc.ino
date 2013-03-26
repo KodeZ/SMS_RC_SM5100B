@@ -32,6 +32,7 @@
 #define CMGR 0x434d4752
 #define CMGD 0x434d4744
 #define CMTI 0x434d5449
+#define CMGS 0x434d4753
 
 SoftwareSerial cellSerial(2, 3); // RX, TX
 SHT1x sht1x( 10, 11 );
@@ -65,7 +66,8 @@ inline uint8_t itoc( uint8_t c )
 
 void convertHexToPdu( uint8_t* hex, int len, uint8_t* message )
 {
-  for( int i = 0; i < len * 2; ++i )
+  int i = 0;
+  for( ; i < len * 2; ++i )
   {
     // Serial.print( "Here:" );
     // Serial.print( i );
@@ -76,11 +78,14 @@ void convertHexToPdu( uint8_t* hex, int len, uint8_t* message )
     // Serial.println( "" );
     message[ i ] = itoc( ( hex[ i / 2 ] >> ( ( ( i + 1 ) % 2 ) * 4 ) ) & 0x0f );
   }
+  message[ i++ ] = 0x1a; // Ctrl+z
+  // message[ i++ ] = 0x1b; // ESC
+  message[ i ] = 0;
 }
 
 int convertPduToHex( uint8_t* message, uint8_t* hex )
 {
-  Serial.println( (char*)message );
+  //Serial.println( (char*)message );
   int i = 0;
   while( message[ i ] != 0 )
   {
@@ -167,33 +172,82 @@ bool receiveString( uint8_t* result, unsigned int timeout )
   return false;
 }
 
-bool sendSms( char* number, char* message )
+void readSensor( float &temperature, float &humiditiy )
 {
+  temperature = sht1x.readTemperatureC();
+  humiditiy = sht1x.readHumidity();
+}
+
+bool sendSms( const uint8_t* number, const char* message )
+{
+  Serial.println( "Starting SMS" );
+  delay( 100 );
+  uint8_t hex[ MAX_STR ];
   int i = 0;
-  sendReceiveString[ i++ ] = '0'; // Use phone SMSC ?
-  sendReceiveString[ i++ ] = '0'; // Use phone SMSC ?
+  hex[ i++ ] = 0x00; // Use phone SMSC ?
+  hex[ i++ ] = 0x11;
 
-  sendReceiveString[ i++ ] = '0';
-  sendReceiveString[ i++ ] = '0';
+  hex[ i++ ] = 0x02;
 
-  sendReceiveString[ i++ ] = 0x00;
-  sendReceiveString[ i++ ] = 0x00;
-  sendReceiveString[ i++ ] = 0x00;
-  sendReceiveString[ i++ ] = 0x00;
-  sendReceiveString[ i++ ] = 0x00;
-  sendReceiveString[ i++ ] = 0x00;
+  // Receiver phone number
+  int length = ( number[ 0 ] + 1 ) / 2; // bytes
 
-  //checkCommand( "", "OK" );
-  return true;
+  for( int j = 0; j < ( ( number[ 0 ] + 1 ) / 2 ) + 2; ++j )
+  {
+    // Serial.println( number[ j ], HEX );
+    hex[ i++ ] = number[ j ];
+  }
+  hex[ i++ ] = 0x00; // TP-PID
+  hex[ i++ ] = 0x00; // TP-DCS
+  hex[ i++ ] = 0x00; // Validity-period
+  uint8_t len = strlen( message );
+  hex[ i++ ] = len; // String length
+  length += ( len - ( len >> 3 ) );
+  for( unsigned int j = 0; j < strlen( message ); ++j )
+  {
+    if( j % 8 == 0 )
+    {
+      hex[ i ] = message[ j ];
+    }
+    else
+    {
+      hex[ i++ ] |= message[ j ] << ( 8 - ( j % 8 ) );
+      hex[ i ] = message[ j ] >> ( j % 8 );
+    }
+  }
+  ++i;
+
+  convertHexToPdu( hex, i, sendReceiveString );
+  // Serial.print( "AT+CMGS=" );
+  // Serial.println( length );
+  // Serial.println( (char*)sendReceiveString );
+  cellSerial.print( "AT+CMGS=" );
+  cellSerial.println( length );
+  if( waitForReceive( '>', 5000 ) )
+  {
+    cellSerial.print( (char*)sendReceiveString );
+    return true;
+  }
+  return false;
 }
 
 void handleSms( uint8_t* str )
 {
+  //Serial.println( (char*)str );
   uint8_t hex[ MAX_STR ];
-  int len = convertPduToHex( str, hex );
+  // int len =
+  convertPduToHex( str, hex );
 
   int pos = hex[ 0 ] + 2; // SMSC len + 2 following bytes
   pos += 11 + ( hex[ pos ] + 1 ) / 2; // number of nibbles for phone number plus international indicator and
+
+  float t, h;
+  readSensor( t, h );
+
+  int8_t th = t;
+  int8_t tl = (uint8_t)( ( t - th ) * 100.0 );
+  int8_t hh = h;
+  int8_t hl = (uint8_t)( ( h - hh ) * 100.0 );
 
   if( hex[ pos ] > 0 )
   {
@@ -203,37 +257,74 @@ void handleSms( uint8_t* str )
     case 'a':
       {
         // Turn off
-        Serial.println( "OFF!" );
+        //Serial.println( "OFF!" );
         digitalWrite( 13, LOW );
+
+        String fixedString = String( "Turned OFF. Thermal reading: " );
+        fixedString += th;
+        fixedString += ".";
+        if( tl < 10 )
+        {
+          fixedString += "0";
+        }
+        fixedString += tl;
+        fixedString += " Humidity: ";
+        fixedString += hh;
+        fixedString += ".";
+        if( hl < 10 )
+        {
+          fixedString += "0";
+        }
+        fixedString += hl;
+        fixedString.toCharArray( (char*)sendReceiveString, MAX_STR );
+        //Serial.println( (char*)sendReceiveString );
+        sendSms( hex + ( hex[ 0 ] + 2 ), (char*)sendReceiveString );
         break;
       }
     case 'p': // Norwegian for ON is "PÅ"
     case 'P':
       {
         // Turn on
-        Serial.println( "ON!" );
+        //Serial.println( "ON!" );
         digitalWrite( 13, HIGH );
+
+        String fixedString = String( "Turned ON. Thermal reading: " );
+        fixedString += th;
+        fixedString += ".";
+        if( tl < 10 )
+        {
+          fixedString += "0";
+        }
+        fixedString += tl;
+        fixedString += " Humidity: ";
+        fixedString += hh;
+        fixedString += ".";
+        if( hl < 10 )
+        {
+          fixedString += "0";
+        }
+        fixedString += hl;
+        fixedString.toCharArray( (char*)sendReceiveString, MAX_STR );
+        //Serial.println( (char*)sendReceiveString );
+        sendSms( hex + ( hex[ 0 ] + 2 ), (char*)sendReceiveString );
         break;
       }
     default:
       {
         // Anything else sends status
-        Serial.println( "Status" );
+        //Serial.println( "Status" );
         break;
       }
     }
   }
 }
 
-void deleteSms( char* asciiIndex )
+void deleteAllSms()
 {
-  Serial.print( "Delete: " );
-  Serial.println( (char*)asciiIndex );
-  char command[15] = "AT+CMGD=";
-  for( unsigned int i = 0; i <= strlen( asciiIndex ); ++i )
-  {
-    command[ 8 + i ] = asciiIndex[ i ];
-  }
+  // Serial.print( "Delete: " );
+  // Serial.println( (char*)asciiIndex );
+  char command[15] = "AT+CMGD=1,4";
+  Serial.println( command );
   cellSerial.println( command );
 }
 
@@ -271,60 +362,53 @@ bool receiveData( uint8_t* str, int timeout )
               receiveData( sendReceiveString, 5000 );
               cellSerial.println( "AT+CMGF=0" );
               receiveData( sendReceiveString, 5000 );
-              cellSerial.println( "AT+CNMI=3,1,1,1" );
+              cellSerial.println( "AT+CNMI=3,1,0,0" );
               receiveData( sendReceiveString, 5000 );
+              // uint8_t hex[ 10 ] = { 0x0a, 0x91, 0x74, 0x09, 0x81, 0x94, 0x51 };
+              // sendSms( hex, "Testing 123" );
             }
             break;
           }
         case CMGL:
         case CMGR:
           {
-            // Find index
-            char asciiIndex[ 10 ];
-            int i = 7;
-            while( str[ i ] != ',' )
-            {
-              asciiIndex[ i - 7 ] = str[ i ];
-              ++i;
-            }
-            asciiIndex[ i - 7 ] = 0;
             // We must read another line to get the SMS content
             receiveString( str, timeout );
             // Now handle the sms
             handleSms( str );
             // Delete message
-            deleteSms( asciiIndex );
+            //deleteAllSms();
             break;
           }
         case CMTI: // +CMTI: "SM",1
           {
-            cellSerial.println( "AT+CMGL=4" ); // +CMGL=4
+            //Serial.println( "AT+CMGL=4" );
+            cellSerial.println( "AT+CMGL=4" );
             break;
           }
         case CMGD:
           {
             break;
           }
+        case CMGS:
+          {
+            deleteAllSms();
+          }
         default:
           {
-            Serial.println( "Unknown command" );
+            // Serial.println( "Unknown command" );
             break;
           }
         }
         break;
       }
     default:
-      Serial.println( "Unknown message received" );
+      ;
+      // Serial.println( "Unknown message received" );
     }
     return true;
   }
   return false;
-}
-
-void readSensor( float &temperature, float &humiditiy )
-{
-  temperature = sht1x.readTemperatureC();
-  humiditiy = sht1x.readHumidity();
 }
 
 void storeTemp()
@@ -364,7 +448,19 @@ void loop() // run over and over
     nextLog += 3600000;
     storeTemp();
   }
-  cellSerial.println( "AT" );
+  //cellSerial.println( "AT" );
   receiveData( sendReceiveString, 5000 );
-  receiveData( sendReceiveString, 25000 );
+  receiveData( sendReceiveString, 5000 );
+  receiveData( sendReceiveString, 5000 );
+  receiveData( sendReceiveString, 5000 );
+  receiveData( sendReceiveString, 5000 );
 }
+
+// 0011020A91740981945100000031D4BADC5D26839E4E17888A2ECBDB6136485E0E93D3EEB30E2493B9643210B2DE4E93D3F4BC0E24B3B96239
+/*
+
+AT+CMGS=49
+0011020A91740981945100000032D4BADC5D26839E46A30B444597E5ED301B242F87C969F7590792C55C391A08596FA7C9697A5E0792D55CB61B
+
+
+ */
